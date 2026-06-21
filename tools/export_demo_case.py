@@ -59,15 +59,26 @@ def _femoral_axis(label, affine, head_frac=0.35, min_voxels=30):
     return np.asarray(cs[0]), np.asarray(cs[1])     # left, right
 
 
-def _endplate(label, affine, level, frac=0.15, min_voxels=30):
+def _endplate(label, affine, level, frac=0.3, min_voxels=30):
+    """Superior-endplate (centroid, cranial unit normal, rms). The cranial slab is
+    taken along the BODY'S OWN cranio-caudal axis (its PCA axis most aligned with
+    WORLD_SUP), so the fitted plane is tangent to a tilted endplate (pelvic tilt
+    for S1) instead of a skewed global-Z slice."""
     src = binary_mask(label, lid(level))
     if level == "S1" and not src.any():
         src = binary_mask(label, lid("sacrum"))
-    pts = endplate_points(largest_component(src), affine, WORLD_SUP, "superior", frac)
+    allpts = mask_world(largest_component(src), affine)
+    if len(allpts) < min_voxels:
+        return None
+    V, _, _ = g.principal_axes(allpts)
+    cc = max((V[:, i] for i in range(3)), key=lambda ax: abs(ax @ WORLD_SUP))
+    if cc @ WORLD_SUP < 0:
+        cc = -cc
+    pts = surface_slab(allpts, cc, "superior", frac)
     if len(pts) < min_voxels:
         return None
     c, n, rms = g.fit_plane_tls(pts)
-    if n @ WORLD_SUP < 0:
+    if n @ cc < 0:
         n = -n
     return c, n, rms
 

@@ -141,15 +141,29 @@ def lumbar_lordosis(endplate_normals: Dict[str, np.ndarray], lr_axis) -> Dict:
 def _endplate_normal_from_label(label, affine, level, which, sup_axis, frac,
                                 min_voxels):
     """(unit normal oriented cranially, centroid, rms, n_points) for one
-    vertebral endplate, or (None, …) if the level is absent / too small."""
+    vertebral endplate, or (None, …) if the level is absent / too small.
+
+    The cranial/caudal slab is taken along the body's OWN cranio-caudal axis (its
+    PCA axis most aligned with `sup_axis`), so the fitted plane stays tangent to a
+    tilted endplate rather than a skewed global-axis slice."""
+    from .geometry import principal_axes
     from .labels import lid
-    from .masks import (binary_mask, endplate_points, largest_component)
-    m = largest_component(binary_mask(label, lid(level)))
-    pts = endplate_points(m, affine, sup_axis, which, frac)
+    from .masks import binary_mask, largest_component, mask_world, surface_slab
+    allpts = mask_world(largest_component(binary_mask(label, lid(level))), affine)
+    if len(allpts) < min_voxels:
+        return None, None, None, len(allpts)
+    V, _, _ = principal_axes(allpts)
+    cc = max((V[:, i] for i in range(3)), key=lambda ax: abs(ax @ sup_axis))
+    if cc @ sup_axis < 0:
+        cc = -cc
+    frac = max(frac, 0.3)                               # enough of the slab to fit
+    pts = surface_slab(allpts, cc, which, frac)
     if len(pts) < min_voxels:
         return None, None, None, len(pts)
     c, n, rms = fit_plane_tls(pts)
-    if n @ sup_axis < 0:                                # orient cranially
+    if n @ cc < 0:                                      # orient toward the slab side
+        n = -n
+    if n @ sup_axis < 0:                               # keep cranial convention
         n = -n
     return n, c, rms, len(pts)
 
