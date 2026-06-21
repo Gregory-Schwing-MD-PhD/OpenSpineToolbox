@@ -13,11 +13,17 @@ from typing import Dict
 
 import numpy as np
 
-from .geometry import (WORLD_SUPERIOR, angle_between, fit_plane_tls, fit_sphere,
-                       project_out, unit)
+from .geometry import (WORLD_SUPERIOR, angle_between, cobb_angle, fit_plane_tls,
+                       fit_sphere, project_out, signed_angle_in_plane, unit)
 from .record import Measurement
 
 PI_METHOD_VERSION = "pi-v1"
+LL_METHOD_VERSION = "ll-v1"
+
+# Superior endplates, cranial → caudal, that bound lumbar lordosis (Greenberg
+# Fig. 73.1: L1 superior endplate → S1 superior endplate). Per-segment lordosis
+# is taken between consecutive entries.
+LL_ENDPLATE_CHAIN = ("L1", "L2", "L3", "L4", "L5", "S1")
 
 
 def pelvic_incidence(endplate_points, femhead_left_points, femhead_right_points,
@@ -52,14 +58,13 @@ def pelvic_incidence(endplate_points, femhead_left_points, femhead_right_points,
     }
 
 
-def pelvic_incidence_from_label(label, affine, *, case_id: str = "",
-                                sup_axis=WORLD_SUPERIOR, endplate_frac: float = 0.15,
-                                head_frac: float = 0.35,
-                                min_voxels: int = 50) -> Measurement:
-    """Compose PI from a v3 label volume. Extraction (approximate — flagged for
-    the manual-validation pass): S1 superior endplate = cranial slab of S1
-    (fallback sacrum); femoral head = cranial slab of each femur (proximal end).
-    Returns a Measurement with QC flags (never silently drops a bad case)."""
+def _pi_from_label_core(label, affine, sup_axis, endplate_frac, head_frac,
+                        min_voxels):
+    """Extract the PI/SS/PT result dict from a v3 label volume (shared by the
+    PI Measurement and the spinopelvic summary). Extraction is approximate —
+    flagged for the manual-validation pass: S1 superior endplate = cranial slab
+    of S1 (fallback sacrum); femoral head = cranial slab of each femur. Returns
+    (result_dict_or_None, flags)."""
     from .labels import lid
     from .masks import (binary_mask, endplate_points, largest_component,
                         mask_world, surface_slab)
@@ -78,15 +83,229 @@ def pelvic_incidence_from_label(label, affine, *, case_id: str = "",
         if len(arr) < min_voxels:
             flags.append(f"low_voxels:{nm}")
     if flags:
-        return Measurement(case_id=case_id, parameter="pelvic_incidence",
-                           value=None, qc_flags=flags,
-                           method_version=PI_METHOD_VERSION)
+        return None, flags
 
     r = pelvic_incidence(ep, fhl, fhr, sup_axis)
     if abs(r["SS"] + r["PT"] - r["PI"]) > 1.0:         # geometric identity check
         flags.append("identity_violation")
-    flags = flags or ["ok"]
+    return r, (flags or ["ok"])
+
+
+def pelvic_incidence_from_label(label, affine, *, case_id: str = "",
+                                sup_axis=WORLD_SUPERIOR, endplate_frac: float = 0.15,
+                                head_frac: float = 0.35,
+                                min_voxels: int = 50) -> Measurement:
+    """Compose PI from a v3 label volume. Returns a Measurement with QC flags
+    (never silently drops a bad case). SS/PT are available via
+    `spinopelvic_summary_from_label`."""
+    r, flags = _pi_from_label_core(label, affine, sup_axis, endplate_frac,
+                                   head_frac, min_voxels)
+    if r is None:
+        return Measurement(case_id=case_id, parameter="pelvic_incidence",
+                           value=None, qc_flags=flags,
+                           method_version=PI_METHOD_VERSION)
     return Measurement(
         case_id=case_id, parameter="pelvic_incidence", value=round(r["PI"], 3),
         landmarks_world_mm=r["landmarks_world_mm"], fit_residuals=r["fit_residuals"],
         qc_flags=flags, method_version=PI_METHOD_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# Lumbar lordosis (LL) — Greenberg §73.5.3, Fig. 73.1. Supine surrogate: the
+# Cobb construction is exact, but the absolute value differs from a standing
+# film, so every LL Measurement carries supine_ct=True (SPEC §5).
+# ---------------------------------------------------------------------------
+
+def lumbar_lordosis(endplate_normals: Dict[str, np.ndarray], lr_axis) -> Dict:
+    """LL from a dict of *cranially-oriented* endplate-plane normals (keys are a
+    cranial→caudal chain such as ``LL_ENDPLATE_CHAIN``) and the patient L–R axis
+    (the sagittal-plane normal — e.g. the bicoxofemoral vector).
+
+    Returns total LL (Cobb magnitude between the first and last endplate present)
+    plus signed per-segment lordosis between consecutive present endplates
+    (positive = lordotic about the right-hand rule on `lr_axis`)."""
+    lr = unit(lr_axis)
+    present = [lv for lv in LL_ENDPLATE_CHAIN if lv in endplate_normals]
+    if len(present) < 2:
+        return {"LL": None, "segments": {}, "levels": present}
+    top, bot = present[0], present[-1]
+    LL = cobb_angle(endplate_normals[top], endplate_normals[bot], lr)
+    segments = {}
+    for a, b in zip(present[:-1], present[1:]):
+        segments[f"{a}-{b}"] = round(
+            signed_angle_in_plane(endplate_normals[a], endplate_normals[b], lr), 3)
+    return {"LL": round(LL, 3), "segments": segments, "levels": present,
+            "span": f"{top}-{bot}"}
+
+
+def _endplate_normal_from_label(label, affine, level, which, sup_axis, frac,
+                                min_voxels):
+    """(unit normal oriented cranially, centroid, rms, n_points) for one
+    vertebral endplate, or (None, …) if the level is absent / too small."""
+    from .labels import lid
+    from .masks import (binary_mask, endplate_points, largest_component)
+    m = largest_component(binary_mask(label, lid(level)))
+    pts = endplate_points(m, affine, sup_axis, which, frac)
+    if len(pts) < min_voxels:
+        return None, None, None, len(pts)
+    c, n, rms = fit_plane_tls(pts)
+    if n @ sup_axis < 0:                                # orient cranially
+        n = -n
+    return n, c, rms, len(pts)
+
+
+def _lr_axis_from_label(label, affine, sup_axis, head_frac, min_voxels):
+    """Patient L–R (sagittal-plane normal) from the two femoral-head centres
+    (bicoxofemoral vector). Returns (lr_unit, ok). Falls back to the image X
+    axis with ok=False if a femur is missing."""
+    from .labels import lid
+    from .masks import (binary_mask, largest_component, mask_world,
+                        surface_slab)
+    cs = []
+    for fem in ("femur_left", "femur_right"):
+        w = mask_world(largest_component(binary_mask(label, lid(fem))), affine)
+        head = surface_slab(w, sup_axis, "superior", head_frac)
+        if len(head) < min_voxels:
+            return unit(np.array([1.0, 0.0, 0.0])), False
+        c, _, _ = fit_sphere(head)
+        cs.append(c)
+    return unit(cs[1] - cs[0]), True                    # right − left
+
+
+def lumbar_lordosis_from_label(label, affine, *, case_id: str = "",
+                               sup_axis=WORLD_SUPERIOR, endplate_frac: float = 0.15,
+                               head_frac: float = 0.35, min_voxels: int = 30
+                               ) -> Measurement:
+    """Compose lumbar lordosis from a v3 label volume. Sagittal plane is derived
+    from the femoral heads (data-derived L–R axis, robust to scan tilt; SPEC §3);
+    each endplate normal is a TLS fit to that body's cranial slab. Needs at least
+    L1 + S1; missing intermediate levels are skipped (and flagged) so a
+    FOV-clipped scan still yields the L1–S1 Cobb where possible."""
+    flags: list = []
+    lr, ok = _lr_axis_from_label(label, affine, sup_axis, head_frac, min_voxels)
+    if not ok:
+        flags.append("sagittal_ref_fallback")          # used image X, not femurs
+
+    normals: Dict[str, np.ndarray] = {}
+    residuals: Dict[str, float] = {}
+    landmarks: Dict[str, list] = {}
+    for lv in LL_ENDPLATE_CHAIN:
+        n, c, rms, k = _endplate_normal_from_label(
+            label, affine, lv, "superior", sup_axis, endplate_frac, min_voxels)
+        if n is None:
+            flags.append(f"missing_label:{lv}")
+            continue
+        normals[lv] = n
+        residuals[f"{lv}_endplate_rms"] = round(rms, 3)
+        landmarks[f"{lv}_superior_endplate"] = c.tolist()
+
+    if "L1" not in normals or "S1" not in normals:
+        flags.append("LL_span_unavailable")
+        return Measurement(case_id=case_id, parameter="lumbar_lordosis",
+                           value=None, qc_flags=flags or ["ok"],
+                           method_version=LL_METHOD_VERSION)
+
+    r = lumbar_lordosis(normals, lr)
+    landmarks["per_segment_lordosis_deg"] = r["segments"]
+    flags = flags or ["ok"]
+    return Measurement(
+        case_id=case_id, parameter="lumbar_lordosis", value=r["LL"],
+        landmarks_world_mm=landmarks, fit_residuals=residuals,
+        qc_flags=flags, method_version=LL_METHOD_VERSION, supine_ct=True)
+
+
+# ---------------------------------------------------------------------------
+# Alignment targets & SRS-Schwab sagittal modifiers (Greenberg §73.6 / §73.7.2).
+# Pure scalar functions — no geometry — so they are exhaustively testable against
+# the published thresholds. SVA is out of scope on supine, C7-less CT (SPEC §5);
+# pass sva_cm only if it comes from elsewhere.
+# ---------------------------------------------------------------------------
+
+def _schwab_grade(value, lo: float, hi: float) -> str:
+    """SRS-Schwab 3-level modifier: 0 (<lo), + (lo..hi), ++ (>hi)."""
+    if value < lo:
+        return "0"
+    return "+" if value <= hi else "++"
+
+
+def pi_ll_mismatch(pi: float, ll: float) -> Dict:
+    """PI − LL mismatch (Greenberg: the dominant driver of sagittal imbalance).
+    Objective is LL = PI ± 9°; surgical-target flag at |PI−LL| > 9°. Schwab
+    PI–LL modifier: 0 (<10°), + (10–20°), ++ (>20°)."""
+    mm = pi - ll
+    return {
+        "pi_minus_ll": round(mm, 3),
+        "abs_pi_minus_ll": round(abs(mm), 3),
+        "within_target_9deg": abs(mm) <= 9.0,          # Greenberg LL = PI ± 9°
+        "surgical_target": abs(mm) > 9.0,
+        "schwab_modifier": _schwab_grade(abs(mm), 10.0, 20.0),
+        "ll_shortfall_deg": round(max(mm - 9.0, 0.0), 3),  # LL increase to reach PI−9°
+    }
+
+
+def ll_increase_needed(pi: float, ll: float, pt: float) -> float:
+    """Greenberg Eq. 73.1 — recommended increase in lumbar lordosis:
+    ΔLL ≈ (PI − LL − 9°) + (PT − 20°). Applies when LL is >9° below PI and PT>20°;
+    each term is clamped at 0 so it degrades gracefully outside that regime."""
+    return round(max(pi - ll - 9.0, 0.0) + max(pt - 20.0, 0.0), 3)
+
+
+def schwab_sagittal_modifiers(pi: float, ll: float, pt: float,
+                              sva_cm: Optional[float] = None) -> Dict:
+    """Full SRS-Schwab sagittal grading + Greenberg alignment objectives for one
+    case. PT modifier: 0 (<20°), + (20–30°), ++ (>30°). SVA modifier: 0 (<4cm),
+    + (4–9.5cm), ++ (>9.5cm) — only if `sva_cm` is supplied (out of scope on v3)."""
+    mm = pi - ll
+    return {
+        "PI-LL": _schwab_grade(abs(mm), 10.0, 20.0),
+        "PT": _schwab_grade(pt, 20.0, 30.0),
+        "SVA": _schwab_grade(sva_cm, 4.0, 9.5) if sva_cm is not None else "out_of_scope",
+        "objectives": {
+            "LL=PI±9°": abs(mm) <= 9.0,
+            "PT<20°": pt < 20.0,
+            "SVA<5cm": (sva_cm < 5.0) if sva_cm is not None else None,
+        },
+        "ll_increase_needed_deg": ll_increase_needed(pi, ll, pt),
+    }
+
+
+def spinopelvic_summary_from_label(label, affine, *, case_id: str = "",
+                                   sup_axis=WORLD_SUPERIOR,
+                                   endplate_frac: float = 0.15,
+                                   head_frac: float = 0.35,
+                                   min_voxels: int = 30) -> Dict:
+    """One-call clinical summary of every Greenberg §73 spinopelvic parameter
+    computable from a v3 (Vert + S1 + femur) label: PI / SS / PT (PI valid on
+    supine CT; SS/PT supine surrogates), LL, PI−LL mismatch, and the SRS-Schwab
+    sagittal modifiers + alignment objectives (Eq. 73.1 LL-increase). SVA/TPA are
+    omitted — out of scope without C7/T1 (SPEC §5). Returns a JSON-serialisable
+    dict; values are None where their inputs were unavailable (flagged, never
+    silently dropped)."""
+    pi_r, pi_flags = _pi_from_label_core(label, affine, sup_axis, endplate_frac,
+                                         head_frac, min_voxels)
+    ll_m = lumbar_lordosis_from_label(
+        label, affine, case_id=case_id, sup_axis=sup_axis,
+        endplate_frac=endplate_frac, head_frac=head_frac, min_voxels=min_voxels)
+
+    PI = round(pi_r["PI"], 3) if pi_r else None
+    SS = round(pi_r["SS"], 3) if pi_r else None
+    PT = round(pi_r["PT"], 3) if pi_r else None
+    LL = ll_m.value
+
+    flags = []
+    if pi_r is None:
+        flags += [f"PI:{f}" for f in pi_flags]
+    if LL is None:
+        flags += [f"LL:{f}" for f in ll_m.qc_flags]
+
+    out: Dict = {
+        "case_id": case_id, "supine_ct": True,
+        "PI": PI, "SS": SS, "PT": PT, "LL": LL,
+        "PI-LL": None, "schwab": None,
+        "qc_flags": flags or ["ok"],
+        "method_version": f"{PI_METHOD_VERSION}+{LL_METHOD_VERSION}",
+    }
+    if PI is not None and LL is not None:
+        out["PI-LL"] = pi_ll_mismatch(PI, LL)
+        out["schwab"] = schwab_sagittal_modifiers(PI, LL, PT)
+    return out

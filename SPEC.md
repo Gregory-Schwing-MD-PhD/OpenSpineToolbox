@@ -135,6 +135,12 @@ drop a bad case, flag it.
 
 Build top-down. ✅ feasible from v3 · ⚠️ feasible-but-limited · ❌ out of scope.
 
+> **Already implemented & tested in [`ostk`](ostk/):** PI/SS/PT (param 1),
+> Lumbar Lordosis + per-segment (param 2), PI–LL mismatch + SRS-Schwab modifiers +
+> Eq. 73.1 LL-increase (param 3). Run them with `python -m ostk all --labels labels/`.
+> Reuse `ostk.geometry` / `ostk.masks` / `ostk.metrics` for the params below rather
+> than re-deriving primitives. The remaining params (4–14) are open miniprojects.
+
 ### Tier 1 — build first
 
 **1. Pelvic Incidence / SS / PT** ✅ — folder `sacral-slope-pelvic-incidence/`
@@ -142,15 +148,15 @@ Build top-down. ✅ feasible from v3 · ⚠️ feasible-but-limited · ❌ out o
 - **Pre:** labels S1(7)/sacrum(8), femur_left(11), femur_right(12), hips(9/10); CT affine.
 - **Post:** PI, SS, PT (deg) + landmarks + fit residuals; QC `|SS+PT−PI|<1°`.
 
-**2. Lumbar Lordosis (LL)** ✅ — folder `lordosis-trall-angle/`
+**2. Lumbar Lordosis (LL)** ✅ **— implemented:** `ostk.metrics.lumbar_lordosis[_from_label]`
 - **Pre:** L1 superior endplate + S1 superior endplate (ids 1, 7/8); patient sagittal plane.
-- **Method:** angle between the two endplate planes, projected to the sagittal plane (Cobb-style). Also emit per-segment lordosis (L1–L2 … L5–S1) for downstream LDI.
+- **Method:** Cobb angle between the L1 and S1 superior-endplate planes projected to the femoral-head-derived sagittal plane; per-segment lordosis L1–L2 … L5–S1 (signed) for downstream LDI.
 - **Post:** LL (deg) + per-segment lordosis; `supine_ct:true`. QC: each endplate fit residual.
 
-**3. PI–LL mismatch** ✅ — derive in the PI or LL project (no new folder needed)
+**3. PI–LL mismatch** ✅ **— implemented:** `ostk.metrics.pi_ll_mismatch`, `schwab_sagittal_modifiers`, `ll_increase_needed`
 - **Pre:** PI (param 1) + LL (param 2) for the same case.
-- **Method:** `mismatch = PI − LL`. Flag the surgical target |PI−LL|>9° (Greenberg).
-- **Post:** mismatch (deg) + boolean `pi_ll_mismatch_gt9`. **Highest clinical payload** — it's what surgeons act on.
+- **Method:** `mismatch = PI − LL`; Greenberg objective LL=PI±9° (surgical target |PI−LL|>9°); SRS-Schwab PI–LL modifier (0/+/++); Eq. 73.1 LL-increase = (PI−LL−9)+(PT−20).
+- **Post:** mismatch (deg) + `within_target_9deg` + Schwab grade. **Highest clinical payload** — what surgeons act on. All emitted by `spinopelvic_summary_from_label`.
 
 ### Tier 2 — feasible, supine-caveated
 

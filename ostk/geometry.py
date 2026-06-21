@@ -94,3 +94,27 @@ def project_out(vectors, axis) -> np.ndarray:
     if V.ndim == 2:
         return V - np.outer(V @ a, a)
     return V - (V @ a) * a
+
+
+def signed_angle_in_plane(v1, v2, plane_normal, degrees: bool = True) -> float:
+    """Signed angle from v1 to v2 measured *within* the plane ⟂ `plane_normal`
+    (both vectors are projected into that plane first). Sign follows the
+    right-hand rule about `plane_normal`. Use for per-segment lordosis where the
+    direction of tilt (lordotic vs kyphotic) matters."""
+    n = unit(plane_normal)
+    a = unit(project_out(v1, n))
+    b = unit(project_out(v2, n))
+    s = float(np.cross(a, b) @ n)
+    c = float(np.clip(a @ b, -1.0, 1.0))
+    ang = float(np.arctan2(s, c))
+    return np.degrees(ang) if degrees else ang
+
+
+def cobb_angle(normal_a, normal_b, view_normal) -> float:
+    """Cobb angle (deg, unsigned) between two endplate planes *as seen in* the
+    viewing plane (normal `view_normal`): project both endplate normals into that
+    plane and take the angle between them — identical to drawing perpendiculars to
+    each endplate and measuring their intersection. Sagittal view (`view_normal` =
+    L–R axis) gives lordosis/kyphosis; coronal view (A–P axis) gives scoliosis."""
+    return angle_between(project_out(normal_a, view_normal),
+                         project_out(normal_b, view_normal))

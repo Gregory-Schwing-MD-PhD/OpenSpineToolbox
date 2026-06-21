@@ -60,7 +60,21 @@ On a subset with manual radiographic PI: report **MAE**, **ICC** (auto vs manual
 and a **Bland–Altman** plot. PI is the parameter most worth defending numerically —
 make this table the centrepiece.
 
-## Your code goes here
+## Reference implementation (provided)
+A tested implementation ships in [`ostk`](../../ostk/) — this folder's
+[`main.py`](main.py) is a thin wrapper:
+```bash
+pip install -r ../../requirements.txt
+python main.py --labels /path/to/labels --out pi.csv      # or: python -m ostk pi --labels ...
+```
+Core: `ostk.metrics.pelvic_incidence_from_label` (and `pelvic_incidence(...)` for the
+point-cloud core, unit-tested on an analytic phantom with PI=SS+PT).
+
+## Your open task — VALIDATION (the headline result)
+The geometry is done; the publishable contribution is proving it. On a subset with
+**manual radiographic PI**, report **MAE**, **ICC** (auto vs manual), and a
+**Bland–Altman** plot; investigate cases the QC flags catch. Put your validation
+code + figures here and fill in:
 - **What it does:**
 - **How to run** (dependencies + command):
 - **Author / team:**
