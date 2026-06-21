@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ostk import geometry as g       # noqa: E402
 from ostk import metrics             # noqa: E402
+from ostk import spine               # noqa: E402
 from ostk.io import load_ct, load_label, voxels_to_world  # noqa: E402
 from ostk.labels import lid          # noqa: E402
 from ostk.masks import (binary_mask, endplate_points, largest_component,  # noqa: E402
@@ -59,28 +60,12 @@ def _femoral_axis(label, affine, head_frac=0.35, min_voxels=30):
     return np.asarray(cs[0]), np.asarray(cs[1])     # left, right
 
 
-def _endplate(label, affine, level, frac=0.3, min_voxels=30):
-    """Superior-endplate (centroid, cranial unit normal, rms). The cranial slab is
-    taken along the BODY'S OWN cranio-caudal axis (its PCA axis most aligned with
-    WORLD_SUP), so the fitted plane is tangent to a tilted endplate (pelvic tilt
-    for S1) instead of a skewed global-Z slice."""
-    src = binary_mask(label, lid(level))
-    if level == "S1" and not src.any():
-        src = binary_mask(label, lid("sacrum"))
-    allpts = mask_world(largest_component(src), affine)
-    if len(allpts) < min_voxels:
-        return None
-    V, _, _ = g.principal_axes(allpts)
-    cc = max((V[:, i] for i in range(3)), key=lambda ax: abs(ax @ WORLD_SUP))
-    if cc @ WORLD_SUP < 0:
-        cc = -cc
-    pts = surface_slab(allpts, cc, "superior", frac)
-    if len(pts) < min_voxels:
-        return None
-    c, n, rms = g.fit_plane_tls(pts)
-    if n @ cc < 0:
-        n = -n
-    return c, n, rms
+def _endplate(label, affine, level, neighbor=None, min_voxels=30):
+    """Superior-endplate (centroid, cranial unit normal, rms) via the shared
+    `ostk.spine` primitive (anterior-body + true-surface fit). `neighbor` is no
+    longer needed but kept for call-site compatibility."""
+    return spine.endplate_from_label(label, affine, level, which="superior",
+                                     min_points=min_voxels)
 
 
 def _project(p, origin, lr):
@@ -109,8 +94,8 @@ def _angle_entry(name, label, value, color, segments, arc, label_at):
 def build_geometry(label, affine):
     """Assemble the angle annotations (world mm) for whatever is computable."""
     fem = _femoral_axis(label, affine)
-    s1 = _endplate(label, affine, "S1")
-    l1 = _endplate(label, affine, "L1")
+    s1 = _endplate(label, affine, "S1", neighbor="L5")   # S1 endplate faces L5
+    l1 = _endplate(label, affine, "L1", neighbor="T12")  # L1 endplate faces T12 (if in FOV)
 
     # sagittal plane: normal = L-R axis (bicoxofemoral if femurs present, else image X)
     if fem is not None:
@@ -211,6 +196,10 @@ def process(args):
 
     geom = build_geometry(seg, laff)
     summary = metrics.spinopelvic_summary_from_label(seg, laff, case_id=args.case_id)
+    # keep the report's LL identical to the drawn construction (neighbour-based)
+    ll_ang = next((a for a in geom["angles"] if a["id"] == "LL" and a["value"] is not None), None)
+    if ll_ang:
+        summary["LL"] = ll_ang["value"]
 
     fg = (seg > 0) & (seg != 50) & (seg != 255)
     margin_vox = int(round(args.crop_margin / float(abs(laff[0, 0]) or 1.0)))

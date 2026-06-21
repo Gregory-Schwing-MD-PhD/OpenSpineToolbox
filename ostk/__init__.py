@@ -1,6 +1,6 @@
 """OpenSpineToolbox kit (ostk) — reusable, tested primitives for building
 spinopelvic measurements from CTSpinoPelvic1K masks. See SPEC.md."""
-from . import geometry, io, labels, masks, metrics, parallel, record
+from . import geometry, io, labels, masks, metrics, parallel, record, spine
 from .geometry import (WORLD_SUPERIOR, angle_between, cobb_angle, fit_plane_tls,
                        fit_sphere, principal_axes, project_out,
                        signed_angle_in_plane, unit)
@@ -14,9 +14,11 @@ from .metrics import (ll_increase_needed, lumbar_lordosis,
                       schwab_sagittal_modifiers, spinopelvic_summary_from_label)
 from .parallel import map_cases
 from .record import Measurement
+from .spine import endplate_from_label, endplate_surface, fit_endplate
 
 __all__ = [
-    "geometry", "io", "labels", "masks", "metrics", "parallel", "record",
+    "geometry", "io", "labels", "masks", "metrics", "parallel", "record", "spine",
+    "fit_endplate", "endplate_surface", "endplate_from_label",
     "WORLD_SUPERIOR", "angle_between", "cobb_angle", "fit_plane_tls",
     "fit_sphere", "principal_axes", "project_out", "signed_angle_in_plane",
     "unit",
