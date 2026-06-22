@@ -159,10 +159,12 @@ def _endplate_normal_from_label(label, affine, level, which, sup_axis, frac,
     `ostk.spine.fit_endplate` primitive (anterior-body + true-surface fit)."""
     from .labels import lid
     from .masks import binary_mask, largest_component, mask_world
+    from .spine import corner_params_for_level
     allpts = mask_world(largest_component(binary_mask(label, lid(level))), affine)
     if len(allpts) < min_voxels:
         return None, None, None, len(allpts)
-    res = fit_endplate(allpts, sup_axis, which, min_points=min_voxels)
+    res = fit_endplate(allpts, sup_axis, which, min_points=min_voxels,
+                       **corner_params_for_level(level))
     if res is None:
         return None, None, None, len(allpts)
     c, n, rms = res

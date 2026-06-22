@@ -153,9 +153,21 @@ def endplate_corners(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
     return A, Pc, body
 
 
+def corner_params_for_level(level: str) -> dict:
+    """Body-isolation params keyed by level. A lumbar/thoracic/cervical vertebra has
+    cleanly separable posterior & lateral elements (pedicles, facets, transverse &
+    spinous processes), so isolate the body TIGHTLY — exclude the lateral and
+    posterior structure so the endplate line can't wander onto a facet. The sacrum
+    is continuous (no free posterior elements), so it uses looser inclusion."""
+    lv = str(level).upper()
+    if lv.startswith("S") or lv == "SACRUM":
+        return dict(lat_frac=0.70, drop_post=0.30)
+    return dict(lat_frac=0.45, drop_post=0.42)
+
+
 def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                 method: str = "corner", ap_band=(0.3, 0.9), lat_frac: float = 0.55,
-                 lr=(1.0, 0.0, 0.0), min_points: int = 30
+                 method: str = "corner", ap_band=(0.3, 0.9), lat_frac: float = 0.70,
+                 drop_post: float = 0.30, lr=(1.0, 0.0, 0.0), min_points: int = 30
                  ) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Fit the superior/inferior endplate plane of a vertebral-body point cloud.
     Returns (centroid, unit normal oriented cranially for 'superior', rms) or None.
@@ -170,7 +182,8 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
     if len(P) < min_points:
         return None
     if method == "corner":
-        res = endplate_corners(P, normal_axis, which, lat_frac=lat_frac, lr=lr)
+        res = endplate_corners(P, normal_axis, which, lat_frac=lat_frac,
+                               drop_post=drop_post, lr=lr)
         if res is None:
             return None
         A, Pc, body = res
@@ -205,10 +218,10 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
 
 def endplate_from_label(label, affine, level: str, which: str = "superior",
                         normal_axis=WORLD_SUPERIOR, method: str = "corner",
-                        ap_band=(0.3, 0.9), lat_frac: float = 0.55,
-                        lr=(1.0, 0.0, 0.0), min_points: int = 30):
-    """Convenience: fit an endplate straight from a label volume + structure name.
-    For S1 falls back to the sacrum label if the carved S1 is absent."""
+                        ap_band=(0.3, 0.9), lr=(1.0, 0.0, 0.0), min_points: int = 30):
+    """Convenience: fit an endplate straight from a label volume + structure name,
+    with body-isolation params chosen for the level (tight for vertebrae, loose for
+    the sacrum). For S1 falls back to the sacrum label if the carved S1 is absent."""
     from .labels import lid
     from .masks import binary_mask, largest_component, mask_world
     m = binary_mask(label, lid(level))
@@ -216,4 +229,4 @@ def endplate_from_label(label, affine, level: str, which: str = "superior",
         m = binary_mask(label, lid("sacrum"))
     pts = mask_world(largest_component(m), affine)
     return fit_endplate(pts, normal_axis, which, method=method, ap_band=ap_band,
-                        lat_frac=lat_frac, lr=lr, min_points=min_points)
+                        lr=lr, min_points=min_points, **corner_params_for_level(level))
