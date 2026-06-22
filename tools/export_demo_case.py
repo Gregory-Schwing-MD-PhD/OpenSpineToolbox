@@ -117,6 +117,20 @@ def build_geometry(label, affine):
     sup_s = g.unit(g.project_out(WORLD_SUP, lr))           # vertical in plane
     horiz = g.unit(np.cross(lr, sup_s))                    # horizontal in plane
 
+    # medial viewing slice = L-R centre of the spinal COLUMN (vertebrae + sacrum),
+    # so the demo opens on the spine midline — not the S1-endplate plane, which on a
+    # rotated/curved spine is laterally offset from the lumbar bodies.
+    col_ids = []
+    for nm in ("sacrum", "S1", "L1", "L2", "L3", "L4", "L5", "L6",
+               "T13", "T12", "T11", "T10", "T9", "T8"):
+        try:
+            col_ids.append(lid(nm))
+        except Exception:
+            pass
+    colmask = np.isin(label, col_ids)
+    view_center = (np.median(mask_world(colmask, affine), axis=0)
+                   if colmask.any() else origin)
+
     angles, points = [], []
     M = _project(0.5 * (cL + cR), origin, lr) if fem is not None else None
     if fem is not None:
@@ -193,7 +207,8 @@ def build_geometry(label, affine):
             (X, A0, beyond1), X + bis * 54))
 
     return {"sagittal_normal": [round(float(x), 4) for x in lr],
-            "plane_origin": _p(origin), "angles": angles, "points": points}
+            "plane_origin": _p(origin), "view_center": _p(view_center),
+            "angles": angles, "points": points}
 
 
 # --------------------------------------------------------------------------- #
