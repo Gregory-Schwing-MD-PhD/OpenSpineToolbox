@@ -81,6 +81,14 @@ def _seg(p, q):
     return [_p(p), _p(q)]
 
 
+def _intersect(p0, d0, p1, d1):
+    """Intersection of two COPLANAR 3-D lines (p0+t*d0, p1+s*d1) via least squares."""
+    A = np.column_stack([np.asarray(d0, float), -np.asarray(d1, float)])  # 3x2
+    b = np.asarray(p1, float) - np.asarray(p0, float)
+    ts, *_ = np.linalg.lstsq(A, b, rcond=None)
+    return np.asarray(p0, float) + ts[0] * np.asarray(d0, float)
+
+
 def _angle_entry(name, label, value, color, segments, arc, label_at):
     """segments: list of [p,q] mm line pairs to draw (animated). arc: {center,a,b}
     in mm defining the angle wedge. label_at: mm point for the value text."""
@@ -119,26 +127,28 @@ def build_geometry(label, affine):
         if n_s @ sup_s < 0:
             n_s = -n_s
         e_dir = g.unit(np.cross(lr, n_s))                  # S1 endplate line direction
-        radius = g.unit(M - P)
+        radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
+        #   (matches ostk.metrics: PI = SS + PT holds. The earlier M-P gave the supplement.)
         PI = g.angle_between(n_s, radius)
         SS = g.angle_between(e_dir, horiz)
         PT = g.angle_between(radius, sup_s)
         HW = 28.0
-        # PI: pelvic radius (P->M) vs S1-endplate perpendicular (P->n_s); wedge at P
+        # PI: S1-endplate perpendicular (P->n_s) vs pelvic radius (drawn P<-M to the
+        # hip; the wedge uses the radius extended through P). Wedge at P.
         angles.append(_angle_entry(
             "PI", "Pelvic Incidence", PI, "#36d399",
-            [_seg(P, M), _seg(P, P + RAY * n_s), _seg(P - HW * e_dir, P + HW * e_dir)],
-            (P, M, P + RAY * n_s), P + 0.5 * (g.unit(M - P) + n_s) * 40))
+            [_seg(M, P), _seg(P, P + RAY * n_s), _seg(P - HW * e_dir, P + HW * e_dir)],
+            (P, P + RAY * radius, P + RAY * n_s), P + g.unit(radius + n_s) * 44))
         # SS: S1 endplate line vs horizontal, wedge at P
         angles.append(_angle_entry(
             "SS", "Sacral Slope", SS, "#60a5fa",
             [_seg(P - HW * e_dir, P + HW * e_dir), _seg(P, P + 0.8 * RAY * horiz)],
             (P, P + e_dir, P + horiz), P + 30 * horiz + 14 * sup_s))
-        # PT: vertical vs hip-axis->S1 line, wedge at M
+        # PT: pelvic radius (M->P) vs vertical, wedge at M (the hip axis)
         angles.append(_angle_entry(
             "PT", "Pelvic Tilt", PT, "#fbbf24",
             [_seg(M, P), _seg(M, M + RAY * sup_s)],
-            (M, P, M + sup_s), M + 0.5 * (g.unit(P - M) + sup_s) * 45))
+            (M, P, M + sup_s), M + g.unit(radius + sup_s) * 45))
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1
@@ -151,15 +161,25 @@ def build_geometry(label, affine):
         e7 = g.unit(np.cross(lr, n7s))
         LL = g.cobb_angle(n1, n7, lr)
         HW = 34.0
-        # Cobb: the L1 and S1 superior-endplate lines + perpendiculars; wedge
-        # between the two perpendiculars (== angle between endplates == LL), drawn
-        # at the midpoint between the endplates so it sits on the spine.
-        mid = 0.5 * (P1 + P7)
+        # Cobb construction (Greenberg Fig. 73.1), FULLY precomputed in world mm so
+        # the viewer only maps fixed points (no screen-space re-derivation -> can't
+        # flip on scroll): endplate line on L1 and S1; the perpendicular from each
+        # anterior end meets at X. L1's perpendicular STOPS at X, S1's continues
+        # past it, and the angle is L1's pre-intersection ray vs S1's post ray.
+        ant = g.unit(np.cross(lr, sup_s))                  # anterior in-plane axis
+        if ant @ np.array([0.0, 1.0, 0.0]) < 0:
+            ant = -ant
+        e1a = e1 if e1 @ ant >= 0 else -e1                 # endplate dirs -> anterior
+        e7a = e7 if e7 @ ant >= 0 else -e7
+        A0, A1 = P1 + HW * e1a, P7 + HW * e7a              # anterior ends
+        X = _intersect(A0, n1s, A1, n7s)                   # perpendiculars meet here
+        beyond1 = X + (X - A1) * 0.75                      # S1 perpendicular past X
+        bis = g.unit(g.unit(A0 - X) + g.unit(beyond1 - X))
         angles.append(_angle_entry(
             "LL", "Lumbar Lordosis", LL, "#f472b6",
             [_seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7),
-             _seg(mid, mid + 0.5 * RAY * n1s), _seg(mid, mid + 0.5 * RAY * n7s)],
-            (mid, mid + n1s, mid + n7s), mid + 0.5 * (n1s + n7s) * 46))
+             _seg(A0, X), _seg(A1, beyond1)],
+            (X, A0, beyond1), X + bis * 54))
 
     return {"sagittal_normal": [round(float(x), 4) for x in lr],
             "plane_origin": _p(origin), "angles": angles, "points": points}

@@ -32,6 +32,15 @@ def pelvic_incidence(endplate_points, femhead_left_points, femhead_right_points,
     """PI/SS/PT from three world-mm point clouds: the S1 superior endplate and
     the two femoral heads. Returns a dict with the angles, landmarks, residuals."""
     m, n, ep_rms = fit_plane_tls(endplate_points)
+    return _pi_from_plane(m, n, ep_rms, femhead_left_points,
+                          femhead_right_points, sup_axis)
+
+
+def _pi_from_plane(m, n, ep_rms, femhead_left_points, femhead_right_points,
+                   sup_axis=WORLD_SUPERIOR) -> Dict:
+    """PI/SS/PT from a PRECOMPUTED S1 endplate plane (centroid m, normal n, rms)
+    plus the two femoral-head clouds. Sharing this lets the PI core and the LL
+    path use the SAME endplate primitive, so the sacral slope is consistent."""
     cL, rL, eL = fit_sphere(femhead_left_points)
     cR, rR, eR = fit_sphere(femhead_right_points)
     bicox = 0.5 * (cL + cR)
@@ -50,6 +59,7 @@ def pelvic_incidence(endplate_points, femhead_left_points, femhead_right_points,
         "PI": PI, "SS": SS, "PT": PT,
         "landmarks_world_mm": {
             "endplate_midpoint": m.tolist(),
+            "endplate_normal": n_s.tolist(),
             "femhead_left": cL.tolist(), "femhead_right": cR.tolist(),
             "bicoxofemoral": bicox.tolist()},
         "fit_residuals": {
@@ -62,31 +72,34 @@ def pelvic_incidence(endplate_points, femhead_left_points, femhead_right_points,
 def _pi_from_label_core(label, affine, sup_axis, endplate_frac, head_frac,
                         min_voxels):
     """Extract the PI/SS/PT result dict from a v3 label volume (shared by the
-    PI Measurement and the spinopelvic summary). Extraction is approximate —
-    flagged for the manual-validation pass: S1 superior endplate = cranial slab
-    of S1 (fallback sacrum); femoral head = cranial slab of each femur. Returns
-    (result_dict_or_None, flags)."""
+    PI Measurement and the spinopelvic summary). The S1 superior endplate uses the
+    shared `ostk.spine` endplate primitive (anterior band + true top-surface fit —
+    the SAME one as lumbar lordosis, so the sacral slope is consistent and reads
+    the true tilt instead of under-reading it with a flat slab). Femoral head =
+    cranial slab of each femur. `endplate_frac` is kept for signature compatibility
+    but no longer used. Returns (result_dict_or_None, flags)."""
     from .labels import lid
-    from .masks import (binary_mask, endplate_points, largest_component,
-                        mask_world, surface_slab)
+    from .masks import binary_mask, largest_component, mask_world, surface_slab
+    from .spine import endplate_from_label
 
     flags: list = []
-    s1 = binary_mask(label, lid("S1"))
-    src = s1 if s1.any() else binary_mask(label, lid("sacrum"))
-    ep = endplate_points(largest_component(src), affine, sup_axis, "superior",
-                         endplate_frac)
+    ep_plane = endplate_from_label(label, affine, "S1", "superior",
+                                   normal_axis=sup_axis, min_points=min_voxels)
     fl = mask_world(largest_component(binary_mask(label, lid("femur_left"))), affine)
     fr = mask_world(largest_component(binary_mask(label, lid("femur_right"))), affine)
     fhl = surface_slab(fl, sup_axis, "superior", head_frac)
     fhr = surface_slab(fr, sup_axis, "superior", head_frac)
 
-    for nm, arr in (("S1", ep), ("femur_left", fhl), ("femur_right", fhr)):
+    if ep_plane is None:
+        flags.append("low_voxels:S1")
+    for nm, arr in (("femur_left", fhl), ("femur_right", fhr)):
         if len(arr) < min_voxels:
             flags.append(f"low_voxels:{nm}")
     if flags:
         return None, flags
 
-    r = pelvic_incidence(ep, fhl, fhr, sup_axis)
+    m, n, ep_rms = ep_plane
+    r = _pi_from_plane(m, n, ep_rms, fhl, fhr, sup_axis)
     if abs(r["SS"] + r["PT"] - r["PI"]) > 1.0:         # geometric identity check
         flags.append("identity_violation")
     return r, (flags or ["ok"])

@@ -31,12 +31,14 @@ def anterior_axis(normal_axis=WORLD_SUPERIOR, lr=(1.0, 0.0, 0.0)) -> np.ndarray:
 
 
 def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                     ant_frac: float = 0.6, lat_frac: float = 0.55, nbins: int = 22,
+                     ap_band=(0.3, 0.9), lat_frac: float = 0.55, nbins: int = 22,
                      lr=(1.0, 0.0, 0.0)) -> np.ndarray:
     """The endplate face of a body point cloud (N,3 world mm): keep the central
-    `lat_frac` in L–R (drops the lateral sacral alae / transverse processes) and
-    the anterior `ant_frac` (drops posterior elements), then the extreme voxel per
-    in-plane column along `normal_axis` (topmost for 'superior')."""
+    `lat_frac` in L–R (drops the lateral sacral alae / transverse processes) and a
+    central ANTERIOR band `ap_band` (quantiles along the anterior axis) — the lower
+    bound drops posterior elements, the UPPER bound drops the anterior osteophyte
+    lip that otherwise tilts the fit (the L1 failure mode). Then take the extreme
+    voxel per in-plane column along `normal_axis` (topmost for 'superior')."""
     P = np.asarray(points, dtype=np.float64)
     if len(P) == 0:
         return P
@@ -48,9 +50,11 @@ def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
         P = P[(lp >= lo) & (lp <= hi)]
         if len(P) == 0:
             return P
-    if 0.0 < ant_frac < 1.0:
+    ap_lo, ap_hi = ap_band
+    if 0.0 <= ap_lo < ap_hi <= 1.0 and (ap_lo > 0.0 or ap_hi < 1.0):
         proj = (P - P.mean(0)) @ anterior_axis(a, lr)
-        P = P[proj >= np.quantile(proj, 1.0 - ant_frac)]
+        lo, hi = np.quantile(proj, [ap_lo, ap_hi])
+        P = P[(proj >= lo) & (proj <= hi)]
         if len(P) == 0:
             return P
     ref = np.array([1.0, 0, 0]) if abs(a @ np.array([1.0, 0, 0])) < 0.9 else np.array([0, 1.0, 0])
@@ -69,7 +73,7 @@ def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
 
 
 def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                 ant_frac: float = 0.6, lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0),
+                 ap_band=(0.3, 0.9), lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0),
                  min_points: int = 30
                  ) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Fit the superior/inferior endplate plane of a vertebral-body point cloud.
@@ -78,7 +82,7 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
     P = np.asarray(points, dtype=np.float64)
     if len(P) < min_points:
         return None
-    surf = endplate_surface(P, normal_axis, which, ant_frac, lat_frac, lr=lr)
+    surf = endplate_surface(P, normal_axis, which, ap_band, lat_frac, lr=lr)
     if len(surf) < min_points:
         surf = P
     c, n, rms = fit_plane_tls(surf)
@@ -101,7 +105,7 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
 
 
 def endplate_from_label(label, affine, level: str, which: str = "superior",
-                        normal_axis=WORLD_SUPERIOR, ant_frac: float = 0.6,
+                        normal_axis=WORLD_SUPERIOR, ap_band=(0.3, 0.9),
                         lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0), min_points: int = 30):
     """Convenience: fit an endplate straight from a label volume + structure name.
     For S1 falls back to the sacrum label if the carved S1 is absent."""
@@ -111,5 +115,5 @@ def endplate_from_label(label, affine, level: str, which: str = "superior",
     if level == "S1" and not m.any():
         m = binary_mask(label, lid("sacrum"))
     pts = mask_world(largest_component(m), affine)
-    return fit_endplate(pts, normal_axis, which, ant_frac=ant_frac,
+    return fit_endplate(pts, normal_axis, which, ap_band=ap_band,
                         lat_frac=lat_frac, lr=lr, min_points=min_points)
