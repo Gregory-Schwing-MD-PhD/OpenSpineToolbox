@@ -31,15 +31,23 @@ def anterior_axis(normal_axis=WORLD_SUPERIOR, lr=(1.0, 0.0, 0.0)) -> np.ndarray:
 
 
 def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                     ant_frac: float = 0.6, nbins: int = 22,
+                     ant_frac: float = 0.6, lat_frac: float = 0.55, nbins: int = 22,
                      lr=(1.0, 0.0, 0.0)) -> np.ndarray:
-    """The endplate face of a body point cloud (N,3 world mm): keep the anterior
-    `ant_frac` of the body (drops posterior elements), then the extreme voxel per
+    """The endplate face of a body point cloud (N,3 world mm): keep the central
+    `lat_frac` in L–R (drops the lateral sacral alae / transverse processes) and
+    the anterior `ant_frac` (drops posterior elements), then the extreme voxel per
     in-plane column along `normal_axis` (topmost for 'superior')."""
     P = np.asarray(points, dtype=np.float64)
     if len(P) == 0:
         return P
     a = unit(normal_axis)
+    lrv = unit(lr)
+    if 0.0 < lat_frac < 1.0:                            # central medial band only
+        lp = P @ lrv
+        lo, hi = np.quantile(lp, [(1 - lat_frac) / 2, 1 - (1 - lat_frac) / 2])
+        P = P[(lp >= lo) & (lp <= hi)]
+        if len(P) == 0:
+            return P
     if 0.0 < ant_frac < 1.0:
         proj = (P - P.mean(0)) @ anterior_axis(a, lr)
         P = P[proj >= np.quantile(proj, 1.0 - ant_frac)]
@@ -61,7 +69,8 @@ def endplate_surface(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
 
 
 def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
-                 ant_frac: float = 0.6, lr=(1.0, 0.0, 0.0), min_points: int = 30
+                 ant_frac: float = 0.6, lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0),
+                 min_points: int = 30
                  ) -> Optional[Tuple[np.ndarray, np.ndarray, float]]:
     """Fit the superior/inferior endplate plane of a vertebral-body point cloud.
     Returns (centroid, unit normal oriented cranially for 'superior', rms) or None
@@ -69,16 +78,21 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
     P = np.asarray(points, dtype=np.float64)
     if len(P) < min_points:
         return None
-    surf = endplate_surface(P, normal_axis, which, ant_frac, lr=lr)
+    surf = endplate_surface(P, normal_axis, which, ant_frac, lat_frac, lr=lr)
     if len(surf) < min_points:
         surf = P
     c, n, rms = fit_plane_tls(surf)
-    # one robust pass: drop the worst-fitting quartile (rim voxels where the
-    # per-column extreme is a side wall, not the face) and refit.
-    d = np.abs((surf - c) @ n)
-    keep = d <= np.quantile(d, 0.75)
-    if keep.sum() >= min_points:
-        c, n, rms = fit_plane_tls(surf[keep])
+    # Iteratively reject outliers (MAD-based) so the plane converges to the
+    # dominant FLAT endplate: discards anterior osteophyte lips (high outliers)
+    # and the posterior down-slope toward the canal/ala (low outliers).
+    for _ in range(6):
+        d = np.abs((surf - c) @ n)
+        thr = 2.0 * np.median(d) + 1e-6
+        keep = d <= thr
+        if keep.all() or keep.sum() < min_points:
+            break
+        surf = surf[keep]
+        c, n, rms = fit_plane_tls(surf)
     a = unit(normal_axis)
     cranial = n @ a >= 0
     if (which == "superior") != cranial:
@@ -88,7 +102,7 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
 
 def endplate_from_label(label, affine, level: str, which: str = "superior",
                         normal_axis=WORLD_SUPERIOR, ant_frac: float = 0.6,
-                        lr=(1.0, 0.0, 0.0), min_points: int = 30):
+                        lat_frac: float = 0.55, lr=(1.0, 0.0, 0.0), min_points: int = 30):
     """Convenience: fit an endplate straight from a label volume + structure name.
     For S1 falls back to the sacrum label if the carved S1 is absent."""
     from .labels import lid
@@ -97,4 +111,5 @@ def endplate_from_label(label, affine, level: str, which: str = "superior",
     if level == "S1" and not m.any():
         m = binary_mask(label, lid("sacrum"))
     pts = mask_world(largest_component(m), affine)
-    return fit_endplate(pts, normal_axis, which, ant_frac, lr, min_points)
+    return fit_endplate(pts, normal_axis, which, ant_frac=ant_frac,
+                        lat_frac=lat_frac, lr=lr, min_points=min_points)
