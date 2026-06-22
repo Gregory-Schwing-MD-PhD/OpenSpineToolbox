@@ -89,12 +89,13 @@ def _intersect(p0, d0, p1, d1):
     return np.asarray(p0, float) + ts[0] * np.asarray(d0, float)
 
 
-def _angle_entry(name, label, value, color, segments, arc, label_at):
-    """segments: list of [p,q] mm line pairs to draw (animated). arc: {center,a,b}
-    in mm defining the angle wedge. label_at: mm point for the value text."""
+def _angle_entry(name, label, value, color, solid, dashed, arc, label_at):
+    """solid: [p,q] mm pairs drawn SOLID (the anatomical endplate line). dashed:
+    [p,q] pairs drawn DOTTED (reference/construction lines — HRL, VRL, perpendicular,
+    pelvic radius). arc: {center,a,b} mm angle wedge. label_at: mm point for the text."""
     return {"id": name, "label": label,
             "value": None if value is None else round(float(value), 1), "units": "°",
-            "color": color, "segments": segments,
+            "color": color, "segments": solid, "dashed": dashed,
             "arc": {"center": _p(arc[0]), "a": _p(arc[1]), "b": _p(arc[2])},
             "label_at": _p(label_at)}
 
@@ -122,33 +123,43 @@ def build_geometry(label, affine):
         points += [{"id": "bicoxofemoral", "pos": _p(M)}]
 
     if s1 is not None and fem is not None:
+        # P = S1 endplate MIDPOINT (the corner-chord midpoint from the primitive),
+        # the anchor the conventional construction hangs off (Legaye/Greenberg fig).
         P = _project(s1[0], origin, lr)
         n_s = g.unit(g.project_out(s1[1], lr))
         if n_s @ sup_s < 0:
             n_s = -n_s
         e_dir = g.unit(np.cross(lr, n_s))                  # S1 endplate line direction
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
-        #   (matches ostk.metrics: PI = SS + PT holds. The earlier M-P gave the supplement.)
         PI = g.angle_between(n_s, radius)
         SS = g.angle_between(e_dir, horiz)
         PT = g.angle_between(radius, sup_s)
-        HW = 28.0
-        # PI: S1-endplate perpendicular (P->n_s) vs pelvic radius (drawn P<-M to the
-        # hip; the wedge uses the radius extended through P). Wedge at P.
-        angles.append(_angle_entry(
-            "PI", "Pelvic Incidence", PI, "#36d399",
-            [_seg(M, P), _seg(P, P + RAY * n_s), _seg(P - HW * e_dir, P + HW * e_dir)],
-            (P, P + RAY * radius, P + RAY * n_s), P + g.unit(radius + n_s) * 44))
-        # SS: S1 endplate line vs horizontal, wedge at P
+        # in-plane anterior/posterior so the HRL projects POSTERIOR like the figure
+        ant_p = g.unit(g.project_out(np.array([0.0, 1.0, 0.0]), lr))
+        if ant_p[1] < 0:
+            ant_p = -ant_p
+        horiz_post = horiz if horiz @ ant_p < 0 else -horiz
+        e_post = e_dir if e_dir @ ant_p < 0 else -e_dir
+        EW, HRLL, PERP, VRLL = 26.0, 92.0, 80.0, 92.0
+        s1line = _seg(P - EW * e_dir, P + EW * e_dir)      # SOLID S1 endplate line
+        # SS: S1 endplate vs HRL (horizontal through the midpoint, projecting posterior)
         angles.append(_angle_entry(
             "SS", "Sacral Slope", SS, "#60a5fa",
-            [_seg(P - HW * e_dir, P + HW * e_dir), _seg(P, P + 0.8 * RAY * horiz)],
-            (P, P + e_dir, P + horiz), P + 30 * horiz + 14 * sup_s))
-        # PT: pelvic radius (M->P) vs vertical, wedge at M (the hip axis)
+            [s1line], [_seg(P - 16 * horiz_post, P + HRLL * horiz_post)],
+            (P, P + 44 * e_post, P + 44 * horiz_post),
+            P + 58 * horiz_post + 26 * sup_s))
+        # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
+        # femoral-head axis; wedge at the S1 midpoint.
+        angles.append(_angle_entry(
+            "PI", "Pelvic Incidence", PI, "#36d399",
+            [s1line], [_seg(P, P - PERP * n_s), _seg(P, M)],
+            (P, P - 46 * n_s, P + 46 * g.unit(M - P)),
+            P + g.unit(g.unit(M - P) - n_s) * 50))
+        # PT: pelvic radius vs vertical (VRL), wedge at the femoral-head axis
         angles.append(_angle_entry(
             "PT", "Pelvic Tilt", PT, "#fbbf24",
-            [_seg(M, P), _seg(M, M + RAY * sup_s)],
-            (M, P, M + sup_s), M + g.unit(radius + sup_s) * 45))
+            [], [_seg(M - 16 * sup_s, M + VRLL * sup_s), _seg(M, P)],
+            (M, M + 46 * sup_s, M + 46 * radius), M + g.unit(radius + sup_s) * 48))
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1
@@ -177,8 +188,8 @@ def build_geometry(label, affine):
         bis = g.unit(g.unit(A0 - X) + g.unit(beyond1 - X))
         angles.append(_angle_entry(
             "LL", "Lumbar Lordosis", LL, "#f472b6",
-            [_seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7),
-             _seg(A0, X), _seg(A1, beyond1)],
+            [_seg(P1 - HW * e1, P1 + HW * e1), _seg(P7 - HW * e7, P7 + HW * e7)],
+            [_seg(A0, X), _seg(A1, beyond1)],
             (X, A0, beyond1), X + bis * 54))
 
     return {"sagittal_normal": [round(float(x), 4) for x in lr],
@@ -208,6 +219,23 @@ def process(args):
 
     label, laff = load_label(args.label)
     seg = label
+    # fast path: rebuild only metrics.json (geometry + summary) from the label,
+    # reusing the already-written ct/seg bundles. Seconds, vs reloading the raw CT.
+    if getattr(args, "geometry_only", False):
+        geom = build_geometry(seg, laff)
+        summary = metrics.spinopelvic_summary_from_label(seg, laff, case_id=args.case_id)
+        ll = next((a for a in geom["angles"] if a["id"] == "LL" and a["value"] is not None), None)
+        if ll:
+            summary["LL"] = ll["value"]
+        mpath = os.path.join(args.out_dir, args.case_id, "metrics.json")
+        meta = json.load(open(mpath, encoding="utf-8"))
+        meta["summary"], meta["geometry"] = summary, geom
+        if args.title:
+            meta["label"] = args.title
+        json.dump(meta, open(mpath, "w", encoding="utf-8"), indent=2, default=_jdef)
+        print(f"[{args.case_id}] geometry-only -> "
+              f"{[a['id'] + '=' + str(a['value']) for a in geom['angles']]}")
+        return
     ct = caff = None
     if args.ct:
         ct, caff = load_ct(args.ct)
@@ -296,6 +324,8 @@ def main(argv=None):
     p.add_argument("--mask-bone", action="store_true", help="zero non-bone CT (smaller)")
     p.add_argument("--bone-dilate", type=int, default=3, help="voxels to keep around bone")
     p.add_argument("--downsample", type=int, default=1, help="subsample factor")
+    p.add_argument("--geometry-only", action="store_true",
+                   help="rebuild only metrics.json from the label; reuse ct/seg")
     process(p.parse_args(argv))
     return 0
 

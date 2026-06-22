@@ -134,7 +134,9 @@ def endplate_corners(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
         r = (body - c) @ n
         med = np.median(r[keep])
         mad = np.median(np.abs(r[keep] - med)) + 1e-6
-        nk = np.abs(r - med) <= reject_k * mad
+        # floor the threshold so we don't reject mere voxel-discretization noise on a
+        # near-flat plate (a real facet / canal deviates by ~cm, far above the floor)
+        nk = np.abs(r - med) <= max(reject_k * mad, 1.5)
         if int(nk.sum()) == int(keep.sum()) or nk.sum() < 6:
             break
         keep = nk
@@ -154,14 +156,11 @@ def endplate_corners(points, normal_axis=WORLD_SUPERIOR, which: str = "superior"
 
 
 def corner_params_for_level(level: str) -> dict:
-    """Body-isolation params keyed by level. A lumbar/thoracic/cervical vertebra has
-    cleanly separable posterior & lateral elements (pedicles, facets, transverse &
-    spinous processes), so isolate the body TIGHTLY — exclude the lateral and
-    posterior structure so the endplate line can't wander onto a facet. The sacrum
-    is continuous (no free posterior elements), so it uses looser inclusion."""
-    lv = str(level).upper()
-    if lv.startswith("S") or lv == "SACRUM":
-        return dict(lat_frac=0.70, drop_post=0.30)
+    """Body-isolation params. TIGHT isolation (exclude the lateral & posterior
+    structure) for every level: on a vertebra it keeps the endplate line off the
+    superior articular facet, and on the sacrum it fits the flatter anterior
+    endplate rather than riding up the promontory. Kept as a hook for per-level
+    overrides, but currently uniform."""
     return dict(lat_frac=0.45, drop_post=0.42)
 
 
