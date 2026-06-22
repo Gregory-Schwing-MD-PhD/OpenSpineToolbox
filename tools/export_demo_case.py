@@ -100,15 +100,20 @@ def _intersect(p0, d0, p1, d1):
     return np.asarray(p0, float) + ts[0] * np.asarray(d0, float)
 
 
-def _angle_entry(name, label, value, color, solid, dashed, arc, label_at):
+def _angle_entry(name, label, value, color, solid, dashed, arc, label_at, rule=None):
     """solid: [p,q] mm pairs drawn SOLID (the anatomical endplate line). dashed:
     [p,q] pairs drawn DOTTED (reference/construction lines — HRL, VRL, perpendicular,
-    pelvic radius). arc: {center,a,b} mm angle wedge. label_at: mm point for the text."""
-    return {"id": name, "label": label,
-            "value": None if value is None else round(float(value), 1), "units": "°",
-            "color": color, "segments": solid, "dashed": dashed,
-            "arc": {"center": _p(arc[0]), "a": _p(arc[1]), "b": _p(arc[2])},
-            "label_at": _p(label_at)}
+    pelvic radius). arc: {center,a,b} mm angle wedge. label_at: mm point for the text.
+    rule (optional): {dots:[mm,...], marks:[{pos,text},...]} — endpoint/midpoint dots
+    and half-length callouts on the endplate line."""
+    d = {"id": name, "label": label,
+         "value": None if value is None else round(float(value), 1), "units": "°",
+         "color": color, "segments": solid, "dashed": dashed,
+         "arc": {"center": _p(arc[0]), "a": _p(arc[1]), "b": _p(arc[2])},
+         "label_at": _p(label_at)}
+    if rule is not None:
+        d["rule"] = rule
+    return d
 
 
 def build_geometry(label, affine):
@@ -166,9 +171,19 @@ def build_geometry(label, affine):
             surf_p = surf - ((surf - origin) @ lr)[:, None] * lr   # project to sag plane
             proj = (surf_p - P) @ e_dir
             half = 0.5 * float(np.percentile(proj, 97.0) - np.percentile(proj, 3.0))
-            s1line = _seg(P - half * e_dir, P + half * e_dir)
         else:
-            s1line = _seg(P - 26.0 * e_dir, P + 26.0 * e_dir)
+            half = 26.0
+        end_a, end_b = P - half * e_dir, P + half * e_dir
+        s1line = _seg(end_a, end_b)
+        # "1/2 + 1/2" rule on the endplate line: dots at the two ends + midpoint, and
+        # each half's length (equal -> proves P bisects the endplate). Lift labels
+        # above the line along the endplate normal.
+        off = 12.0 * n_s
+        ss_rule = {
+            "dots": [_p(end_a), _p(P), _p(end_b)],
+            "marks": [{"pos": _p(0.5 * (end_a + P) + off), "text": f"{half:.1f} mm"},
+                      {"pos": _p(0.5 * (P + end_b) + off), "text": f"{half:.1f} mm"}],
+        }
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
         PI = g.angle_between(n_s, radius)
         SS = g.angle_between(e_dir, horiz)
@@ -188,7 +203,7 @@ def build_geometry(label, affine):
             "SS", "Sacral Slope", SS, "#60a5fa",
             [s1line], [_seg(P, P + HRLL * horiz_post)],
             (P, P + 44 * e_post, P + 44 * horiz_post),
-            P + 50 * horiz_post + 11 * sup_s))
+            P + 50 * horiz_post + 11 * sup_s, rule=ss_rule))
         # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
         # femoral-head axis; wedge at the S1 midpoint. Label sits slightly POSTERIOR
         # (dynamic) so it doesn't collide with PT.
