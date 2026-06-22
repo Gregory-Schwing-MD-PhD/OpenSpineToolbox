@@ -186,7 +186,16 @@ def fit_endplate(points, normal_axis=WORLD_SUPERIOR, which: str = "superior",
         if res is None:
             return None
         A, Pc, body = res
-        mid = 0.5 * (A + Pc)
+        # midpoint = centre of the endplate extent that is actually OVER THE BODY: the
+        # surface points are the per-column tops of the mask, so their span along the
+        # endplate direction is the over-mask portion. Use its (outlier-robust) centre
+        # as the construction anchor / PI-PT radius origin. Orientation still comes from
+        # the AP corners, so LL is unchanged.
+        e_dir = unit(np.cross(unit(lr), unit(Pc - A)))
+        c0 = body.mean(axis=0)
+        proj = (body - c0) @ e_dir
+        lo, hi = np.percentile(proj, [3.0, 97.0])
+        mid = c0 + 0.5 * (lo + hi) * e_dir
         n = unit(np.cross(unit(lr), unit(Pc - A)))
         rms = float(np.sqrt(np.mean(((body - mid) @ n) ** 2)))
         a = unit(normal_axis)

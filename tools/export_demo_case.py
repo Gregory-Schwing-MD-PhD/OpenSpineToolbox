@@ -68,15 +68,15 @@ def _endplate(label, affine, level, neighbor=None, min_voxels=30):
                                      min_points=min_voxels)
 
 
-def _s1_corners(label, affine):
-    """Anterior & posterior cortical corners of the S1 superior endplate (world mm),
-    so the drawn endplate line is the actual traced segment and PI/SS/PT anchor on
-    its true midpoint. Returns (anterior, posterior) or None."""
+def _s1_endplate_surface(label, affine):
+    """The cleaned S1 superior-endplate surface points (world mm), so the drawn
+    endplate line spans the true endplate and PI/SS/PT anchor on its geometric
+    centre. Returns the (N,3) surface or None."""
     src = "S1" if binary_mask(label, lid("S1")).any() else "sacrum"
     pts = mask_world(largest_component(binary_mask(label, lid(src))), affine)
     res = spine.endplate_corners(pts, which="superior",
                                  **spine.corner_params_for_level("S1"))
-    return None if res is None else (res[0], res[1])
+    return None if res is None else np.asarray(res[2], float)
 
 
 def _project(p, origin, lr):
@@ -156,14 +156,16 @@ def build_geometry(label, affine):
         if n_s @ sup_s < 0:
             n_s = -n_s
         e_dir = g.unit(np.cross(lr, n_s))                  # S1 endplate line direction
-        s1c = _s1_corners(label, affine)                   # (anterior, posterior) world mm
-        if s1c is not None:
-            A_s = _project(s1c[0], origin, lr)
-            Pc_s = _project(s1c[1], origin, lr)
-            P = 0.5 * (A_s + Pc_s)                          # midpoint of the traced line
-            s1line = _seg(A_s, Pc_s)
+        # P = endplate centroid (== ostk.metrics' endplate midpoint, so the drawn PI/PT
+        # match the report). Draw the endplate line CENTRED on P, spanning the surface.
+        P = _project(s1[0], origin, lr)
+        surf = _s1_endplate_surface(label, affine)
+        if surf is not None and len(surf) >= 6:
+            surf_p = surf - ((surf - origin) @ lr)[:, None] * lr   # project to sag plane
+            proj = (surf_p - P) @ e_dir                            # P is the over-mask centre
+            lo, hi = np.percentile(proj, [3.0, 97.0])              # clip to the over-mask span
+            s1line = _seg(P + lo * e_dir, P + hi * e_dir)
         else:
-            P = _project(s1[0], origin, lr)
             s1line = _seg(P - 26.0 * e_dir, P + 26.0 * e_dir)
         radius = g.unit(P - M)                             # hip-axis -> S1 midpoint
         PI = g.angle_between(n_s, radius)
@@ -192,13 +194,14 @@ def build_geometry(label, affine):
             "PI", "Pelvic Incidence", PI, "#36d399",
             [s1line], [_seg(P, P - PERP * n_s), _seg(P, M)],
             (P, P - 46 * n_s, P + 46 * g.unit(M - P)),
-            P + 30 * horiz_post - 34 * sup_s))
+            P + g.unit(g.unit(M - P) - n_s) * 44))   # in the arc (bisector of PI)
         # PT: pelvic radius vs vertical (VRL), wedge at the femoral-head axis. Label
         # on the ANTERIOR side (dynamic) so PI and PT can be read at the same time.
         angles.append(_angle_entry(
             "PT", "Pelvic Tilt", PT, "#fbbf24",
             [], [_seg(M - 16 * sup_s, M + VRLL * sup_s), _seg(M, P)],
-            (M, M + 46 * sup_s, M + 46 * radius), M + 46 * horiz_ant + 30 * sup_s))
+            (M, M + 46 * sup_s, M + 46 * radius),
+            M + 14 * horiz_ant + 52 * sup_s))        # hugging the VRL, anterior side
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1
