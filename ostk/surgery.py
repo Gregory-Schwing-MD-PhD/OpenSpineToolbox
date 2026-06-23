@@ -209,6 +209,76 @@ def compensate_pelvis(label, affine, *, target_pt: float = 20.0,
     return _rotate_ids(label, affine, spine_ids, F, lr, th)
 
 
+def correction_transform(label, affine, level: str, delta_deg: float, *,
+                         technique: str = "alif", sup_axis=WORLD_SUPERIOR, lr_axis=None):
+    """Resolve the correction into its geometric pieces (shared by the label and CT
+    paths): the mobile vertebra ids, the hinge fulcrum F (world), the L–R rotation
+    axis, the signed angle θ, and the technique's (fulcrum position, reconcile mode)."""
+    label = np.asarray(label)
+    A = np.asarray(affine, dtype=float)
+    present = set(int(v) for v in np.unique(label)) - {0}
+    mobile = mobile_ids_for_level(level, present)
+    if not mobile:
+        raise ValueError(f"no mobile vertebrae present at/above {level}")
+    lvl_mask = label == LABELS[level]
+    if not lvl_mask.any():
+        raise ValueError(f"operative level {level} not in the volume")
+    position, mode = TECHNIQUES.get(technique.lower(), ("posterior", "cage"))
+    lr = unit(lr_axis) if lr_axis is not None else _lr_axis(label, affine, sup_axis)
+    theta = _oriented_theta(label, affine, level, delta_deg, lr, sup_axis)
+    F = _hinge_fulcrum(label, affine, level, position, sup_axis, lr)
+    if F is None:
+        F = A[:3, :3] @ np.argwhere(lvl_mask).mean(0) + A[:3, 3]
+    return {"mobile_ids": mobile, "F": F, "lr": lr, "theta": theta,
+            "position": position, "mode": mode}
+
+
+def warp_ct(ct, label, affine, level: str, delta_deg: float, *,
+            technique: str = "alif", sup_axis=WORLD_SUPERIOR, lr_axis=None,
+            postop_label=None, cage_hu: float = 250.0, cage_id: int = CAGE_ID):
+    """Phase 3 — synthesise the post-op CT IMAGE. The mobile vertebral segment moves
+    rigidly with its labels; surrounding soft tissue deforms SMOOTHLY so there is no
+    seam, via a displacement field weighted w∈[0,1] (1 at mobile bone → full rigid
+    motion, 0 at fixed bone → no motion, a distance-blended transition between). If
+    `postop_label` is given, its cage voxels are stamped at `cage_hu` (instrumentation).
+    Returns the warped CT (same shape/dtype family). Heavy on full-res volumes — meant
+    to be precomputed offline (e.g. for the demo), not run live."""
+    from scipy import ndimage
+    ct = np.asarray(ct)
+    label = np.asarray(label)
+    A = np.asarray(affine, dtype=float)
+    t = correction_transform(label, affine, level, delta_deg,
+                             technique=technique, sup_axis=sup_axis, lr_axis=lr_axis)
+    F, lr, theta = t["F"], t["lr"], t["theta"]
+    Rinv = rotation_matrix(lr, -theta)
+
+    mobile_mask = np.isin(label, t["mobile_ids"])
+    fixed_bone = (label > 0) & ~mobile_mask
+    spacing = np.abs(np.linalg.norm(A[:3, :3], axis=0))
+    d_mob = ndimage.distance_transform_edt(~mobile_mask, sampling=spacing)
+    d_fix = ndimage.distance_transform_edt(~fixed_bone, sampling=spacing) if fixed_bone.any() \
+        else np.full(label.shape, 1e3)
+    w = (d_fix / (d_fix + d_mob + 1e-6)).astype(np.float32)     # 1@mobile, 0@fixed
+
+    # PULL warp: out[y] = ct[ y + w·(R⁻¹(y−F)+F − y) ] (identity where w=0, rigid where w=1)
+    sh = ct.shape
+    grid = np.stack(np.meshgrid(np.arange(sh[0]), np.arange(sh[1]),
+                                np.arange(sh[2]), indexing="ij"), -1).astype(np.float32)
+    world = grid @ A[:3, :3].T.astype(np.float32) + A[:3, 3].astype(np.float32)
+    rot_inv = (world - F) @ Rinv.T.astype(np.float32) + F.astype(np.float32)
+    src_world = world + w[..., None] * (rot_inv - world)
+    invA = np.linalg.inv(A)
+    src_vox = src_world @ invA[:3, :3].T.astype(np.float32) + invA[:3, 3].astype(np.float32)
+    warped = ndimage.map_coordinates(
+        ct, [src_vox[..., 0], src_vox[..., 1], src_vox[..., 2]],
+        order=1, mode="constant", cval=float(ct.min()))
+
+    if postop_label is not None:                               # stamp instrumentation
+        warped = warped.copy()
+        warped[np.asarray(postop_label) == cage_id] = cage_hu
+    return warped.astype(ct.dtype)
+
+
 def simulate_correction(label, affine, level: str, delta_deg: float, *,
                         technique: str = "alif", sup_axis=WORLD_SUPERIOR,
                         lr_axis=None, cage_id: int = CAGE_ID):
@@ -218,34 +288,19 @@ def simulate_correction(label, affine, level: str, delta_deg: float, *,
     resect; SPO → mid-disc). Re-run ostk.metrics on the result for the post-op angles.
     """
     label = np.asarray(label)
-    A = np.asarray(affine, dtype=float)
     present = set(int(v) for v in np.unique(label)) - {0}
-
-    mobile = mobile_ids_for_level(level, present)
-    if not mobile:
-        raise ValueError(f"no mobile vertebrae present at/above {level}")
-    lvl_id = LABELS[level]
-    lvl_mask = label == lvl_id
-    if not lvl_mask.any():
-        raise ValueError(f"operative level {level} (id {lvl_id}) not in the volume")
-
-    position, mode = TECHNIQUES.get(technique.lower(), ("posterior", "cage"))
-    lr = unit(lr_axis) if lr_axis is not None else _lr_axis(label, affine, sup_axis)
-    theta = _oriented_theta(label, affine, level, delta_deg, lr, sup_axis)
-
-    F = _hinge_fulcrum(label, affine, level, position, sup_axis, lr)
-    if F is None:                                    # fallback: level centroid (same angle)
-        F = A[:3, :3] @ np.argwhere(lvl_mask).mean(0) + A[:3, 3]
+    t = correction_transform(label, affine, level, delta_deg,
+                             technique=technique, sup_axis=sup_axis, lr_axis=lr_axis)
 
     # rotate the mobile segment about the hinge fulcrum (rotated voxels overwrite at
     # overlaps; for PSO the anterior fulcrum makes that overlap the resected, closed
     # body wedge).
-    out = _rotate_ids(label, affine, mobile, F, lr, theta)
+    out = _rotate_ids(label, affine, t["mobile_ids"], t["F"], t["lr"], t["theta"])
 
-    if mode == "cage":
+    if t["mode"] == "cage":
         below = _vertebra_below(level)
         if below and LABELS[below] in present:
             k, plus = _si_axis_and_sign(affine, sup_axis)
-            _fill_disc_cage(out, out == lvl_id, label == LABELS[below], cage_id, k, plus)
+            _fill_disc_cage(out, out == LABELS[level], label == LABELS[below], cage_id, k, plus)
 
     return out.astype(label.dtype)

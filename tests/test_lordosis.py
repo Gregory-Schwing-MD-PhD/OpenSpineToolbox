@@ -299,3 +299,20 @@ def test_compensate_pelvis_voxel_releases_retroversion():
     assert post["PT"] < pre["PT"] - 2.0                         # retroversion released
     same = surgery.compensate_pelvis(label, A, target_pt=pre["PT"] + 5.0)   # already below
     assert np.array_equal(same, label)                          # no-op guard
+
+
+def test_warp_ct_bone_follows_labels_and_cage():
+    """Phase-3: the warped CT carries bone HU into the rotated mobile-vertebra labels,
+    leaves the fixed pelvis bone in place, stays finite, and stamps the cage."""
+    from ostk import surgery
+    label, A = _phantom_spine(), np.eye(4)
+    ct = np.where(label > 0, 300.0, -50.0).astype(np.float32)   # bone=300 HU, soft=-50
+    post = surgery.simulate_correction(label, A, "L3", 12.0, technique="alif")
+    warped = surgery.warp_ct(ct, label, A, "L3", 12.0, technique="alif", postop_label=post)
+
+    assert warped.shape == ct.shape and np.all(np.isfinite(warped))
+    moved = np.isin(post, [1, 2, 3])                            # rotated L1–L3 labels
+    assert warped[moved].mean() > 150.0                         # bone HU followed the labels
+    s1 = label == 7
+    assert abs(warped[s1].mean() - ct[s1].mean()) < 40.0        # fixed S1 bone unmoved
+    assert int((warped[post == surgery.CAGE_ID] == 250.0).sum()) > 0   # cage stamped
