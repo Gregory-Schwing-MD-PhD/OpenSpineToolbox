@@ -259,11 +259,33 @@ def pi_ll_mismatch(pi: float, ll: float) -> Dict:
     return {
         "pi_minus_ll": round(mm, 3),
         "abs_pi_minus_ll": round(abs(mm), 3),
+        "ll_target_deg": [round(pi - 9.0, 1), round(pi + 9.0, 1)],   # LL = PI ± 9°
         "within_target_9deg": abs(mm) <= 9.0,          # Greenberg LL = PI ± 9°
         "surgical_target": abs(mm) > 9.0,
         "schwab_modifier": _schwab_grade(abs(mm), 10.0, 20.0),
         "ll_shortfall_deg": round(max(mm - 9.0, 0.0), 3),  # LL increase to reach PI−9°
     }
+
+
+def pi_magnitude_category(pi: float) -> str:
+    """Coarse PI band used to set lordosis expectations: low (<45°), average
+    (45–60°), high (>60°). A high PI demands a larger lordosis to stay balanced."""
+    if pi < 45.0:
+        return "low"
+    return "average" if pi <= 60.0 else "high"
+
+
+def roussouly_type_from_ss(ss: float) -> str:
+    """Roussouly sagittal morphotype estimated from sacral slope. SS alone cannot
+    separate type 1 from 2 (that needs the lordosis apex / segment count), so SS<35
+    is reported as "1-2":
+        SS < 35° -> "1-2" (low SS: short or flat lordosis)
+        35–45°   -> "3"   (harmonious)
+        SS > 45° -> "4"   (high SS, long deep lordosis)
+    """
+    if ss < 35.0:
+        return "1-2"
+    return "3" if ss <= 45.0 else "4"
 
 
 def ll_increase_needed(pi: float, ll: float, pt: float) -> float:
@@ -328,6 +350,10 @@ def spinopelvic_summary_from_label(label, affine, *, case_id: str = "",
         "qc_flags": flags or ["ok"],
         "method_version": f"{PI_METHOD_VERSION}+{LL_METHOD_VERSION}",
     }
+    if PI is not None:
+        out["pi_category"] = pi_magnitude_category(PI)
+    if SS is not None:
+        out["roussouly"] = roussouly_type_from_ss(SS)
     if PI is not None and LL is not None:
         out["PI-LL"] = pi_ll_mismatch(PI, LL)
         out["schwab"] = schwab_sagittal_modifiers(PI, LL, PT)

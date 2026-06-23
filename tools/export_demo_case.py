@@ -241,9 +241,8 @@ def build_geometry(label, affine):
         # endplate and the horizontal.
         angles.append(_angle_entry(
             "SS", "Sacral Slope", SS, "#60a5fa",
-            [s1line],
-            [_seg(P + half * e_post, P + (half + 70.0) * e_post),
-             _seg(P, P + HRLL * horiz_post)],
+            [s1line, _seg(P, P + HRLL * horiz_post)],     # endplate + HRL solid
+            [_seg(P + half * e_post, P + (half + 70.0) * e_post)],   # dotted endplate continuation
             (P, P + 44 * e_post, P + 44 * horiz_post),
             P + 78 * horiz_post + 16 * sup_s, rule=ss_rule, arc_r_px=92))
         # PI: S1-endplate perpendicular (into the pelvis) vs the pelvic radius to the
@@ -253,14 +252,16 @@ def build_geometry(label, affine):
             "PI", "Pelvic Incidence", PI, "#36d399",
             [s1line], [_seg(P, P - PERP * n_s), _seg(P, M)],
             (P, P - 46 * n_s, P + 46 * g.unit(M - P)),
-            P + g.unit(g.unit(M - P) - n_s) * 44))   # in the arc (bisector of PI)
+            P + g.unit(g.unit(M - P) - n_s) * 56))   # along the PI bisector, further inferior
         # PT: pelvic radius vs vertical (VRL), wedge at the femoral-head axis. Label
         # on the ANTERIOR side (dynamic) so PI and PT can be read at the same time.
+        vtop = M + max(0.0, float((P - M) @ sup_s)) * sup_s   # VRL stops level with P
         angles.append(_angle_entry(
             "PT", "Pelvic Tilt", PT, "#fbbf24",
-            [], [_seg(M - 16 * sup_s, M + VRLL * sup_s), _seg(M, P)],
+            [_seg(M, vtop)],                         # VRL solid, from the vertex (no overshoot)
+            [_seg(M, P)],                            # radius / hypotenuse dotted
             (M, M + 46 * sup_s, M + 46 * radius),
-            M + 14 * horiz_ant + 52 * sup_s))        # hugging the VRL, anterior side
+            M + 34 * horiz_ant + 50 * sup_s))        # anterior side, clear of the VRL
 
     if s1 is not None and l1 is not None:
         P1, n1, _ = l1

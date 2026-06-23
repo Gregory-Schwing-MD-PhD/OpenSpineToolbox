@@ -102,6 +102,24 @@ def test_pt_modifier_boundaries():
     assert metrics.schwab_sagittal_modifiers(50, 48, 31)["PT"] == "++"
 
 
+def test_pi_ll_target_range():
+    assert metrics.pi_ll_mismatch(50.0, 46.0)["ll_target_deg"] == [41.0, 59.0]
+
+
+def test_pi_magnitude_category():
+    assert metrics.pi_magnitude_category(40) == "low"
+    assert metrics.pi_magnitude_category(45) == "average"
+    assert metrics.pi_magnitude_category(60) == "average"
+    assert metrics.pi_magnitude_category(61) == "high"
+
+
+def test_roussouly_type_from_ss():
+    assert metrics.roussouly_type_from_ss(32) == "1-2"
+    assert metrics.roussouly_type_from_ss(35) == "3"
+    assert metrics.roussouly_type_from_ss(45) == "3"
+    assert metrics.roussouly_type_from_ss(46) == "4"
+
+
 # --- end-to-end from a synthetic label volume ------------------------------
 
 def _ball(grid_pts, center, radius):
