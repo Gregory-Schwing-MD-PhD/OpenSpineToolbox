@@ -120,6 +120,32 @@ def test_roussouly_type_from_ss():
     assert metrics.roussouly_type_from_ss(46) == "4"
 
 
+def test_femoral_head_center_rejects_neck_and_shaft():
+    """The robust head fit must recover the spherical head centre despite the neck
+    and shaft, using the acetabular interface — and beat a naive whole-femur fit."""
+    from ostk.labels import lid
+    D = 96
+    ijk = np.argwhere(np.ones((D, D, D), dtype=bool)).astype(float)
+    label = np.zeros((D, D, D), dtype=np.int32); flat = label.reshape(-1)
+    Chead = np.array([40.0, 48.0, 60.0]); R = 12.0
+    # femur = head ball + neck/shaft cylinder running infero-laterally
+    head = np.linalg.norm(ijk - Chead, axis=1) <= R
+    axisv = g.unit(np.array([1.0, 0.0, -1.5]))
+    d = (ijk - Chead) @ axisv
+    inplane = np.linalg.norm((ijk - Chead) - np.outer(d, axisv), axis=1)
+    shaft = (d >= 0) & (d <= 40) & (inplane <= 6.0)
+    flat[head | shaft] = lid("femur_left")
+    # acetabulum = thin shell hugging the superior head surface (the socket)
+    rr = np.linalg.norm(ijk - Chead, axis=1)
+    flat[(rr > R + 0.5) & (rr <= R + 3.0) & (ijk[:, 2] > Chead[2])] = lid("left_hip")
+
+    c, r, rms = metrics.femoral_head_center(label, np.eye(4), "femur_left", "left_hip")
+    assert np.linalg.norm(c - Chead) < 3.0          # recovered the head centre
+    assert abs(r - R) < 3.0 and rms < 4.0           # anatomic radius, tight shell fit
+    cn, _, _ = g.fit_sphere(ijk[head | shaft])      # naive fit is dragged toward shaft
+    assert np.linalg.norm(c - Chead) < np.linalg.norm(cn - Chead)
+
+
 # --- end-to-end from a synthetic label volume ------------------------------
 
 def _ball(grid_pts, center, radius):

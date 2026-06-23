@@ -49,15 +49,19 @@ RAY = 130.0          # default annotation ray length (mm)
 # --------------------------------------------------------------------------- #
 
 def _femoral_axis(label, affine, head_frac=0.35, min_voxels=30):
+    # Robust femoral-head centres (acetabular-interface sphere fit, extended through
+    # the neck) — the SAME primitive ostk.metrics uses for the reported PI, so the
+    # drawn hip axis matches the report.
+    pairs = (("femur_left", "left_hip"), ("femur_right", "right_hip"))
     cs = []
-    for fem in ("femur_left", "femur_right"):
-        w = mask_world(largest_component(binary_mask(label, lid(fem))), affine)
-        head = surface_slab(w, WORLD_SUP, "superior", head_frac)
-        if len(head) < min_voxels:
+    for fem, hip in pairs:
+        out = metrics.femoral_head_center(label, affine, fem, hip,
+                                          sup_axis=WORLD_SUP, slab_frac=head_frac,
+                                          min_voxels=min_voxels)
+        if out is None:
             return None
-        c, _, _ = g.fit_sphere(head)
-        cs.append(c)
-    return np.asarray(cs[0]), np.asarray(cs[1])     # left, right
+        cs.append(np.asarray(out[0]))
+    return cs[0], cs[1]                              # left, right
 
 
 def _endplate(label, affine, level, neighbor=None, min_voxels=30):

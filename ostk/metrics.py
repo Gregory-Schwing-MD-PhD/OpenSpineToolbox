@@ -32,17 +32,79 @@ def pelvic_incidence(endplate_points, femhead_left_points, femhead_right_points,
     """PI/SS/PT from three world-mm point clouds: the S1 superior endplate and
     the two femoral heads. Returns a dict with the angles, landmarks, residuals."""
     m, n, ep_rms = fit_plane_tls(endplate_points)
-    return _pi_from_plane(m, n, ep_rms, femhead_left_points,
-                          femhead_right_points, sup_axis)
-
-
-def _pi_from_plane(m, n, ep_rms, femhead_left_points, femhead_right_points,
-                   sup_axis=WORLD_SUPERIOR) -> Dict:
-    """PI/SS/PT from a PRECOMPUTED S1 endplate plane (centroid m, normal n, rms)
-    plus the two femoral-head clouds. Sharing this lets the PI core and the LL
-    path use the SAME endplate primitive, so the sacral slope is consistent."""
-    cL, rL, eL = fit_sphere(femhead_left_points)
+    cL, rL, eL = fit_sphere(femhead_left_points)       # caller supplies head clouds
     cR, rR, eR = fit_sphere(femhead_right_points)
+    return _pi_from_plane(m, n, ep_rms, cL, cR, sup_axis, rL=rL, rR=rR, eL=eL, eR=eR)
+
+
+def femoral_head_center(label, affine, femur_name, hip_name=None, *,
+                        sup_axis=WORLD_SUPERIOR, contact_mm=6.0,
+                        slab_frac=0.30, min_voxels=50):
+    """Robust femoral-head CENTRE (the hip-axis endpoint for PI/PT).
+
+    The femoral head is a sphere, but the femur mask also holds the neck and
+    proximal shaft, which drag a naive sphere fit off the head (centre pulled
+    toward the neck). Two-stage fit:
+      1. SEED from the acetabular interface — femur voxels within `contact_mm` of
+         the same-side hip mask are, by construction, on the head surface (they sit
+         in the socket), so a sphere through them is already well-centred.
+      2. EXTEND through the neck — keep femur voxels on that sphere's SHELL
+         (|‖p−c‖−r| small, within ~1.3 r) and refit ×2. This grows the fit over the
+         whole head while rejecting the neck/shaft — the same off-surface rejection
+         the endplate fit uses for osteophytes.
+    Falls back to a robust cranial-slab fit when the hip mask is absent/too small.
+    Returns (centre, radius, rms) or None."""
+    from .labels import lid, LABELS
+    from .masks import binary_mask, largest_component, mask_world, surface_slab
+    fem = mask_world(largest_component(binary_mask(label, lid(femur_name))), affine)
+    if len(fem) < min_voxels:
+        return None
+
+    def _refine(c, r):
+        shell = None
+        for _ in range(2):
+            near = fem[np.linalg.norm(fem - c, axis=1) <= 1.3 * r]
+            if len(near) < min_voxels:
+                break
+            d = np.linalg.norm(near - c, axis=1)
+            s = near[np.abs(d - r) <= max(0.18 * r, 3.0)]
+            if len(s) < min_voxels:
+                break
+            shell = s
+            c, r, _ = fit_sphere(shell)
+        # rms over the HEAD shell (fit quality), not the whole femur (shaft is far)
+        pts = shell if shell is not None else fem
+        rms = float(np.sqrt(np.mean((np.linalg.norm(pts - c, axis=1) - r) ** 2)))
+        return c, r, rms
+
+    seed = None
+    if hip_name and hip_name in LABELS:
+        hipm = binary_mask(label, lid(hip_name))
+        if hipm.any():
+            hip = mask_world(hipm, affine)
+            try:
+                from scipy.spatial import cKDTree
+                d, _ = cKDTree(hip).query(fem)
+                cand = fem[d <= contact_mm]
+                if len(cand) >= min_voxels:
+                    seed = cand                        # acetabular-contact head surface
+            except Exception:
+                seed = None
+    if seed is None:                                   # fallback: cranial slab
+        seed = surface_slab(fem, sup_axis, "superior", slab_frac)
+        if len(seed) < min_voxels:
+            return None
+    c, r, _ = fit_sphere(seed)
+    return _refine(c, r)
+
+
+def _pi_from_plane(m, n, ep_rms, cL, cR, sup_axis=WORLD_SUPERIOR,
+                   rL=None, rR=None, eL=None, eR=None) -> Dict:
+    """PI/SS/PT from a PRECOMPUTED S1 endplate plane (centroid m, normal n, rms)
+    plus the two femoral-head CENTRES (cL, cR; from `femoral_head_center`). Sharing
+    this lets the PI core and the LL path use the SAME endplate primitive, so the
+    sacral slope is consistent."""
+    cL = np.asarray(cL, float); cR = np.asarray(cR, float)
     bicox = 0.5 * (cL + cR)
 
     lr = unit(cR - cL)                                  # left–right axis
@@ -75,29 +137,30 @@ def _pi_from_label_core(label, affine, sup_axis, endplate_frac, head_frac,
     PI Measurement and the spinopelvic summary). The S1 superior endplate uses the
     shared `ostk.spine` endplate primitive (anterior band + true top-surface fit —
     the SAME one as lumbar lordosis, so the sacral slope is consistent and reads
-    the true tilt instead of under-reading it with a flat slab). Femoral head =
-    cranial slab of each femur. `endplate_frac` is kept for signature compatibility
-    but no longer used. Returns (result_dict_or_None, flags)."""
-    from .labels import lid
-    from .masks import binary_mask, largest_component, mask_world, surface_slab
+    the true tilt instead of under-reading it with a flat slab). Femoral-head
+    centres use the robust acetabular-interface sphere fit (`femoral_head_center`),
+    not a cranial slab. `endplate_frac` is kept for signature compatibility but no
+    longer used. Returns (result_dict_or_None, flags)."""
     from .spine import endplate_from_label, endplate_overmask_midpoint_from_label
 
     flags: list = []
     ep_plane = endplate_from_label(label, affine, "S1", "superior",
                                    normal_axis=sup_axis, min_points=min_voxels)
-    fl = mask_world(largest_component(binary_mask(label, lid("femur_left"))), affine)
-    fr = mask_world(largest_component(binary_mask(label, lid("femur_right"))), affine)
-    fhl = surface_slab(fl, sup_axis, "superior", head_frac)
-    fhr = surface_slab(fr, sup_axis, "superior", head_frac)
+    L = femoral_head_center(label, affine, "femur_left", "left_hip",
+                            sup_axis=sup_axis, slab_frac=head_frac, min_voxels=min_voxels)
+    R = femoral_head_center(label, affine, "femur_right", "right_hip",
+                            sup_axis=sup_axis, slab_frac=head_frac, min_voxels=min_voxels)
 
     if ep_plane is None:
         flags.append("low_voxels:S1")
-    for nm, arr in (("femur_left", fhl), ("femur_right", fhr)):
-        if len(arr) < min_voxels:
-            flags.append(f"low_voxels:{nm}")
+    if L is None:
+        flags.append("low_voxels:femur_left")
+    if R is None:
+        flags.append("low_voxels:femur_right")
     if flags:
         return None, flags
 
+    (cL, rL, eL), (cR, rR, eR) = L, R
     m, n, ep_rms = ep_plane
     # PI/PT radius origin = midpoint of the endplate portion over the body, on the rim
     # (more accurate than the corner-midpoint, which the anterior tangent skip biases
@@ -105,7 +168,7 @@ def _pi_from_label_core(label, affine, sup_axis, endplate_frac, head_frac,
     om = endplate_overmask_midpoint_from_label(label, affine, "S1", sup_axis, "superior")
     if om is not None:
         m = om
-    r = _pi_from_plane(m, n, ep_rms, fhl, fhr, sup_axis)
+    r = _pi_from_plane(m, n, ep_rms, cL, cR, sup_axis, rL=rL, rR=rR, eL=eL, eR=eR)
     if abs(r["SS"] + r["PT"] - r["PI"]) > 1.0:         # geometric identity check
         flags.append("identity_violation")
     return r, (flags or ["ok"])
@@ -179,20 +242,15 @@ def _endplate_normal_from_label(label, affine, level, which, sup_axis, frac,
 
 def _lr_axis_from_label(label, affine, sup_axis, head_frac, min_voxels):
     """Patient L–R (sagittal-plane normal) from the two femoral-head centres
-    (bicoxofemoral vector). Returns (lr_unit, ok). Falls back to the image X
-    axis with ok=False if a femur is missing."""
-    from .labels import lid
-    from .masks import (binary_mask, largest_component, mask_world,
-                        surface_slab)
-    cs = []
-    for fem in ("femur_left", "femur_right"):
-        w = mask_world(largest_component(binary_mask(label, lid(fem))), affine)
-        head = surface_slab(w, sup_axis, "superior", head_frac)
-        if len(head) < min_voxels:
-            return unit(np.array([1.0, 0.0, 0.0])), False
-        c, _, _ = fit_sphere(head)
-        cs.append(c)
-    return unit(cs[1] - cs[0]), True                    # right − left
+    (bicoxofemoral vector, robust acetabular-interface fit). Returns (lr_unit, ok).
+    Falls back to the image X axis with ok=False if a femur is missing."""
+    L = femoral_head_center(label, affine, "femur_left", "left_hip",
+                            sup_axis=sup_axis, slab_frac=head_frac, min_voxels=min_voxels)
+    R = femoral_head_center(label, affine, "femur_right", "right_hip",
+                            sup_axis=sup_axis, slab_frac=head_frac, min_voxels=min_voxels)
+    if L is None or R is None:
+        return unit(np.array([1.0, 0.0, 0.0])), False
+    return unit(R[0] - L[0]), True                      # right − left
 
 
 def lumbar_lordosis_from_label(label, affine, *, case_id: str = "",
