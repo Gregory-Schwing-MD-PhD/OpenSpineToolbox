@@ -255,3 +255,22 @@ def test_simulate_correction_adds_lordosis_pelvis_fixed():
     assert abs(post["PT"] - pre["PT"]) < 1.0
     improved = pre["PI-LL"]["pi_minus_ll"] - post["PI-LL"]["pi_minus_ll"]
     assert improved > DELTA - 3.0                               # PI−LL closes by ~Δ
+
+
+def test_simulate_correction_technique_reconciliation():
+    """Phase-2 hinge mechanics: an interbody/ALIF inserts a cage in the opened disc;
+    a PSO does not. Both still add lordosis (angle is fulcrum-independent)."""
+    from ostk import surgery
+    label, A = _phantom_spine(), np.eye(4)
+    pre = metrics.spinopelvic_summary_from_label(label, A)
+
+    alif = surgery.simulate_correction(label, A, "L3", 12.0, technique="alif")
+    pso = surgery.simulate_correction(label, A, "L3", 12.0, technique="pso")
+
+    assert int((alif == surgery.CAGE_ID).sum()) > 0            # cage placed in the disc
+    assert int((pso == surgery.CAGE_ID).sum()) == 0            # PSO: no cage
+
+    for out in (alif, pso):
+        post = metrics.spinopelvic_summary_from_label(out, A)
+        assert (post["LL"] - pre["LL"]) > 12.0 - 4.0           # lordosis added
+        assert abs(post["PI"] - pre["PI"]) < 1.5               # pelvis fixed
