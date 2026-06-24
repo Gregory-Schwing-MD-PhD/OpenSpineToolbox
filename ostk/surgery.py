@@ -492,8 +492,10 @@ def place_interbody_cages(label, ct, affine, disc_pairs, *, cage_id=CAGE_ID,
         core = ndimage.binary_erosion(
             (lab == LABELS[up]) | (lab == LABELS[lo]), iterations=3).reshape(-1)
         box &= ~core
-        if cage_id is not None:                            # label it (else CT-only implant)
-            lab.reshape(-1)[box] = cage_id
+        # CARVE the seat: clear any vertebra label where the cage sits (a discectomy /
+        # endplate prep), so the cage occupies those voxels exclusively — NO overlap with
+        # the body masks. CT-only cage (cage_id=None) leaves the seat unlabelled.
+        lab.reshape(-1)[box] = cage_id if cage_id is not None else 0
         im.reshape(-1)[box] = cage_hu                      # bright metal HU on the CT
     return lab, im
 
