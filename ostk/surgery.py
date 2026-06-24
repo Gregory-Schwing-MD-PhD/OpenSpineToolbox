@@ -476,16 +476,22 @@ def place_interbody_cages(label, ct, affine, disc_pairs, *, cage_id=CAGE_ID,
         depth = float((wu @ apx).max() - (wu @ apx).min())
         wide = float((wu @ lrx).max() - (wu @ lrx).min())
         apw, ww = min(ap_mm, 0.55 * depth), min(width_mm, 0.85 * wide)
-        # seat at the ANTERIOR border: cage's anterior face ~3 mm behind the anterior cortex
-        # of the upper body (ALIF cages sit anteriorly, not centrally/posteriorly).
-        ant_face = float((wu @ apx).max())
-        center = center + apx * ((ant_face - apw / 2 - 3.0) - center @ apx)
+        # seat FLUSH with the anterior cortex (mean of the two bodies' anterior borders) —
+        # the cage's anterior face sits right at the front of the vertebral bodies.
+        ant_face = 0.5 * (float((wu @ apx).max()) + float((wl @ apx).max()))
+        center = center + apx * ((ant_face - apw / 2) - center @ apx)
         d = world - center.astype(np.float32)
         ul, ua, uh = d @ lrx, d @ apx, d @ hgt
         t = np.clip((ua + apw / 2) / apw, 0.0, 1.0)        # 0 posterior → 1 anterior
         hh = 0.5 * (h_post_mm + (h_ant_mm - h_post_mm) * t)   # wedge: taller anteriorly
         box = (np.abs(ul) <= ww / 2) & (np.abs(ua) <= apw / 2) & (np.abs(uh) <= hh)
-        box &= (lab.reshape(-1) == 0)                      # disc gap ONLY — no body overlap
+        # keep the cage OUT of the vertebral-body CORE (eroded), but let it sit in the disc
+        # space and against the endplates so its anterior face reaches the cortex (flush) —
+        # like a real cage that contacts the endplates without being buried in trabecular bone.
+        from scipy import ndimage
+        core = ndimage.binary_erosion(
+            (lab == LABELS[up]) | (lab == LABELS[lo]), iterations=3).reshape(-1)
+        box &= ~core
         if cage_id is not None:                            # label it (else CT-only implant)
             lab.reshape(-1)[box] = cage_id
         im.reshape(-1)[box] = cage_hu                      # bright metal HU on the CT
